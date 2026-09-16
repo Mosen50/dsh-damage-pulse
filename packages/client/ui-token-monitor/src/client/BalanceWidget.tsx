@@ -267,8 +267,6 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const animTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
   const animQueue = useRef<PendingFloat[]>([])
-  // 权威余额已包含刚发生的扣费；尚未发射的金额要临时加回，避免轮询校准后再次扣除。
-  const queuedDebit = useRef(0)
   const queueTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const whalePoseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const lastCriticalAt = useRef(0)
@@ -533,10 +531,9 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
       ...(label === undefined ? {} : { label }),
     }
     setAnims((list) => [...list, { id, ...next }].slice(-MAX_ACTIVE_FLOATS))
-    if (debit !== undefined && debit > 0) {
-      queuedDebit.current = Math.max(0, queuedDebit.current - debit)
-      setDisplay((previous) => applyDebitToDisplay(previous, debit))
-    }
+    // 显示值只由接口快照校准 + 逐条扣减动画组成；不再把 "尚未发射的扣费" 加回快照，
+    // 否则发射管线一旦中断，快照的下降会被待发射金额原样抵消，数字被永久钉死。
+    if (debit !== undefined && debit > 0) setDisplay((previous) => applyDebitToDisplay(previous, debit))
     if (color === 'red' && revivingRef.current) {
       revivingRef.current = false
       setReviving(false)
@@ -580,9 +577,13 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
       queueTimer.current = undefined
       return
     }
-    emit(next)
-    // 保留一个完整发射间隔作为冷却窗，确保同批同步入队也会错峰。
-    queueTimer.current = setTimeout(drain, FLOAT_EMIT_INTERVAL_MS)
+    try {
+      emit(next)
+    } finally {
+      // 排程放进 finally：单条发射失败（浏览器动画 API 异常等）不能让整条队列停摆。
+      // 保留一个完整发射间隔作为冷却窗，确保同批同步入队也会错峰。
+      queueTimer.current = setTimeout(drain, FLOAT_EMIT_INTERVAL_MS)
+    }
   }, [emit])
 
   /** 将反馈加入共同轨道队列，连续触发时保持可辨识的部分覆盖。 */
@@ -596,7 +597,6 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
     debit?: number,
     suppressWhaleReaction = false,
   ) => {
-    if (debit !== undefined && debit > 0) queuedDebit.current += debit
     animQueue.current.push({
       eventId,
       text,
@@ -607,16 +607,19 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
       ...(debit === undefined ? {} : { debit }),
       ...(suppressWhaleReaction ? { suppressWhaleReaction } : {}),
     })
-    if (queueTimer.current === undefined && animQueue.current.length === 1) drainQueue()
+    // 队列非空且没有在跑的发射链就启动，避免残留的定时器 id 让后续反馈永远排不出去。
+    if (queueTimer.current === undefined && animQueue.current.length > 0) drainQueue()
   }, [drainQueue])
 
   useEffect(() => () => {
     if (flashTimer.current !== undefined) clearTimeout(flashTimer.current)
-    if (queueTimer.current !== undefined) clearTimeout(queueTimer.current)
+    if (queueTimer.current !== undefined) {
+      clearTimeout(queueTimer.current)
+      queueTimer.current = undefined
+    }
     animTimers.current.forEach((timer) => clearTimeout(timer))
     animTimers.current.clear()
     animQueue.current = []
-    queuedDebit.current = 0
     if (whalePoseTimer.current !== undefined) clearTimeout(whalePoseTimer.current)
   }, [])
 
@@ -690,7 +693,7 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
               if (!cancelled && balance !== null) {
                 setBalanceInfo(balance)
                 lastBalanceSnapshot.current = balance.totalBalance
-                setDisplay(balance.totalBalance + queuedDebit.current)
+                setDisplay(balance.totalBalance)
               }
             }
           } catch {
@@ -704,6 +707,10 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
         if (events.length === 0) return
         if (cancelled) return
         for (const event of events) {
+          // 游标先推进再做飘字/动画：视觉管线抛错时不能让客户端下一轮重复拉取
+          // 并重复扣减同一条扣费（原实现把该赋值放在视觉处理之后，异常会被下面的
+          // catch 吞掉，游标停在原地，于是每秒重放整本账）。
+          chargeSeq.current = Math.max(chargeSeq.current, event.seq)
           const eventId = event.id ?? `charge-${event.seq}`
           const topKind = event.kind
           const parts: Array<{ suffix: string; cost: number; kind: DamageKind; label: FloatAnim['label'] }> = []
@@ -735,7 +742,6 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
             if (!Number.isFinite(part.cost) || part.cost <= 0) continue
             trigger(`${eventId}-${part.suffix}`, `-${fmtCost(part.cost)}¥`, 'red', part.kind, part.label, event.seq, part.cost)
           }
-          chargeSeq.current = Math.max(chargeSeq.current, event.seq)
         }
       } catch {
         // 扣费轮询失败静默（不影响余额显示）。
@@ -768,6 +774,9 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
           const previousSnapshot = lastBalanceSnapshot.current
           const grew = previousSnapshot !== null && data.totalBalance > previousSnapshot + 1e-9
           const crossedFromDepleted = previousSnapshot !== null && previousSnapshot <= 0 && data.totalBalance > 0
+          // 先落权威快照与显示值，再做充值动画：视觉管线抛错不能连校准一起带走。
+          lastBalanceSnapshot.current = data.totalBalance
+          setDisplay(data.totalBalance)
           if (grew) {
             trigger(
               `heal-${Date.now()}`,
@@ -780,8 +789,6 @@ export function BalanceWidget({ previewOverride, loadRouteEligibility, useSessio
               crossedFromDepleted,
             )
           }
-          lastBalanceSnapshot.current = data.totalBalance
-          setDisplay(data.totalBalance + queuedDebit.current)
           if (crossedFromDepleted && showWhaleGirlRef.current) {
             if (whalePoseTimer.current !== undefined) clearTimeout(whalePoseTimer.current)
             whalePoseTimer.current = undefined
