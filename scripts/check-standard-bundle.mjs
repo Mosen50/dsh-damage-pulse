@@ -88,13 +88,14 @@ const checks = {
     host.includes('"events" in result') || host.includes("'events' in result"),
   'host bundle synced from current host migration source':
     readFileSync(new URL('../plugins/dsh-token-monitor/src/migration.ts', import.meta.url), 'utf8').includes("'events' in result"),
-  'peer ranges cover legacy DSH, Desktop 2.0.4, and DSH 0.1.5':
+  'peer ranges cover legacy DSH, Desktop 2.0.4, DSH 0.1.5, and DSH 0.1.6':
     Object.entries(manifest.peerDependencies ?? {})
       .filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
       .every(([, range]) => range.includes('^0.1.0-rc.5')
         && range.includes('^0.1.1-rc.2')
         && range.includes('^0.1.2-alpha.1')
-        && range.includes('^0.1.5-alpha.1')),
+        && range.includes('^0.1.5-alpha.1')
+        && range.includes('^0.1.6-alpha.1')),
   'Client WeChat settings': client.includes('wechatNotificationsEnabled')
     && client.includes('/api/token-monitor/wechat')
     && client.includes('/status')

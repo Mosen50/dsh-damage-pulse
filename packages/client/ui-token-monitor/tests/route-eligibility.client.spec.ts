@@ -68,6 +68,22 @@ describe('route eligibility', () => {
     hook.unmount()
   })
 
+  it('resolves the active alpha.2 session from mainView retention', async () => {
+    const load = vi.fn().mockResolvedValue(true)
+    const useSessions = (select: (state: { byId: Record<string, { id: string; retainedBy: { mainView?: number } }> }) => unknown) => select({
+      byId: {
+        background: { id: 'background', retainedBy: {} },
+        active: { id: 'active', retainedBy: { mainView: 1 } },
+      },
+    })
+    const hook = renderHook(() => useRouteEligibility(useSessions as never, load, false))
+
+    await act(async () => {})
+    expect(load).toHaveBeenCalledWith('active', expect.any(AbortSignal))
+    expect(hook.result.current).toBe(true)
+    hook.unmount()
+  })
+
   it('accepts exact and version-suffixed official priced models', () => {
     expect(matchesPricedModel('deepseek-v4-flash', pricing.models)).toBe(true)
     expect(isRouteEligible(

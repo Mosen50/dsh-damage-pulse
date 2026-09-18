@@ -9,7 +9,8 @@ export function useRouteEligibility(
   load: RouteEligibilityLoader | undefined,
   bypass: boolean,
 ): boolean | undefined {
-  const sessionId = useSessions(snapshot => snapshot.current)
+  const sessionId = useSessions(snapshot => snapshot.current ?? Object.values(snapshot.byId)
+    .find(session => (session.retainedBy?.mainView ?? 0) > 0)?.id)
   const generation = useRef(0)
   const [eligible, setEligible] = useState<boolean | undefined>(bypass ? true : undefined)
 

@@ -14,12 +14,13 @@ export type { SessionId }
 export interface SessionSummaryLike {
   id: SessionId
   displayTitle: string
+  retainedBy?: { readonly mainView?: number }
   projectionValues?: SessionCostProjectionLike
 }
 
 export interface SessionListStateLike {
   byId: Record<SessionId, SessionSummaryLike>
-  current: SessionId | undefined
+  current?: SessionId | undefined
 }
 
 export type ConversationLocationLike =
